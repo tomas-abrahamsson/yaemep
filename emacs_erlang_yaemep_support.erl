@@ -181,13 +181,13 @@ tr_fs_1([], _Pattern, _RT, Visited, Acc) ->
     {Visited, Acc}.
 
 new_set() ->
-    sets:new().
+    #{}.
 
 add_element(Elem, Set) ->
-    sets:add_element(Elem, Set).
+    Set#{Elem => true}.
 
 is_in_set(Elem, Set) ->
-    sets:is_element(Elem, Set).
+    maps:is_key(Elem, Set).
 
 -spec analyze_wildcard(string()) -> {TopDir, FilePattern} when
       TopDir :: string(),
