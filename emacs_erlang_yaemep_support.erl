@@ -108,13 +108,21 @@ erlang_project_dir(ErlangFilePath) ->
 %% - TopDir/somefile.ext
 %% If TopDir is missing, use current directory, but don't include it
 %% in the results
+%%
+%% It is possible for the user to configure some file patterns.  If
+%% they are too complex for this `filelib:wildcard'-lookalike, fallback
+%% to using the real implementation. Symlink loops are probably rare.
 -spec find_files(Pattern::string()) -> [FileName::string()].
 find_files(Wildcard) ->
-    {TopDir, Pattern, RT} = analyze_wildcard(Wildcard),
-    Visited0 = new_set(), % containing paths for files, dirs and symlinks
-    Acc0 = [],            % matching files
-    {_Visited, Acc} = traverse_fs(TopDir, Pattern, RT, Visited0, Acc0),
-    lists:reverse(Acc).
+    case analyze_wildcard(Wildcard) of
+        {ok, {TopDir, Pattern, RT}} ->
+            Visited0 = new_set(), % containing paths for files, dirs, symlinks
+            Acc0 = [],            % matching files
+            {_Visited, Acc} = traverse_fs(TopDir, Pattern, RT, Visited0, Acc0),
+            lists:reverse(Acc);
+        {error, unhandled_wildcard} ->
+            filelib:wildcard(Wildcard)
+    end.
 
 traverse_fs(Path, Pattern, RT, Visited, Acc) ->
     case file:list_dir(Path) of
@@ -187,23 +195,34 @@ is_in_set(Elem, Set) ->
       BasePattern :: {extensions, [string()]} | % with leading dots
                      {exact_base, string()}.
 analyze_wildcard(Wildcard) ->
-    case lists:reverse(filename:split(Wildcard)) of
-        [BasePattern] ->
-            Cwd = safe_cwd(),
-            RT = mk_safe_path_unprefixer(Cwd),
-            {Cwd, analyze_base_pattern(BasePattern), RT};
-        [BasePattern, "**"] ->
-            Cwd = safe_cwd(),
-            RT = mk_safe_path_unprefixer(Cwd),
-            {Cwd, {recursively, analyze_base_pattern(BasePattern)}, RT};
-        [BasePattern, "**" | TopDirReversed] ->
-            TopDir = filename:join(lists:reverse(TopDirReversed)),
-            RT = fun(X) -> X end,
-            {TopDir, {recursively, analyze_base_pattern(BasePattern)}, RT};
-        [BasePattern | TopDirReversed] ->
-            TopDir = filename:join(lists:reverse(TopDirReversed)),
-            RT = fun(X) -> X end,
-            {TopDir, analyze_base_pattern(BasePattern), RT}
+    try
+        case lists:reverse(filename:split(Wildcard)) of
+            [BasePattern] ->
+                Cwd = safe_cwd(),
+                RT = mk_safe_path_unprefixer(Cwd),
+                {ok, {Cwd, analyze_base_pattern(BasePattern), RT}};
+            [BasePattern, "**"] ->
+                Cwd = safe_cwd(),
+                Pattern = {recursively, analyze_base_pattern(BasePattern)},
+                RT = mk_safe_path_unprefixer(Cwd),
+                {ok, {Cwd, Pattern, RT}};
+            [BasePattern, "**" | TopDirReversed] ->
+                TopDir = filename:join(lists:reverse(TopDirReversed)),
+                error_if_wildcards(TopDir),
+                Pattern = {recursively, analyze_base_pattern(BasePattern)},
+                RT = fun(X) -> X end,
+                {ok, {TopDir, Pattern, RT}};
+            [BasePattern | TopDirReversed] ->
+                TopDir = filename:join(lists:reverse(TopDirReversed)),
+                error_if_wildcards(TopDir),
+                Pattern = analyze_base_pattern(BasePattern),
+                RT = fun(X) -> X end,
+                {ok, {TopDir, Pattern, RT}};
+            _ ->
+                throw({error, unhandled_wildcard})
+        end
+    catch throw:{error, Reason} ->
+            {error, Reason}
     end.
 
 safe_cwd() ->
@@ -229,8 +248,11 @@ mk_safe_path_unprefixer(Prefix) ->
     end.
 
 analyze_base_pattern("*."++ExtPattern) ->
-    {extensions, analyze_extension_pattern(ExtPattern)};
+    Exts = analyze_extension_pattern(ExtPattern),
+    _ = [error_if_wildcards(Ext) || Ext <- Exts],
+    {extensions, Exts};
 analyze_base_pattern(X) ->
+    error_if_wildcards(X),
     {exact_base, X}.
 
 analyze_extension_pattern("{"++AltsRest) ->
@@ -248,6 +270,14 @@ analyze_ext_alts("}"++_, Curr, Acc) ->
     end;
 analyze_ext_alts([C | Rest], Curr, Acc) ->
     analyze_ext_alts(Rest, [C | Curr], Acc).
+
+error_if_wildcards("**"++_)  -> throw({error, unhandled_wildcard});
+error_if_wildcards("*"++_)   -> throw({error, unhandled_wildcard});
+error_if_wildcards("?"++_)   -> throw({error, unhandled_wildcard});
+error_if_wildcards("{"++_)   -> throw({error, unhandled_wildcard});
+error_if_wildcards("["++_)   -> throw({error, unhandled_wildcard});
+error_if_wildcards([_ | Tl]) -> error_if_wildcards(Tl);
+error_if_wildcards("")       ->  ok.
 
 matches_file_pattern(Path, {recursively, BasePattern}) ->
     matches_file_pattern(Path, BasePattern);
