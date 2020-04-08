@@ -106,8 +106,6 @@ erlang_project_dir(ErlangFilePath) ->
 %% - TopDir/**/xyz.erl
 %% - TopDir/*.beam
 %% - TopDir/somefile.ext
-%% If TopDir is missing, use current directory, but don't include it
-%% in the results
 %%
 %% It is possible for the user to configure some file patterns.  If
 %% they are too complex for this `filelib:wildcard'-lookalike, fallback
@@ -115,48 +113,48 @@ erlang_project_dir(ErlangFilePath) ->
 -spec find_files(Pattern::string()) -> [FileName::string()].
 find_files(Wildcard) ->
     case analyze_wildcard(Wildcard) of
-        {ok, {TopDir, Pattern, RT}} ->
+        {ok, {TopDir, Pattern}} ->
             Visited0 = new_set(), % containing paths for files, dirs, symlinks
             Acc0 = [],            % matching files
-            {_Visited, Acc} = traverse_fs(TopDir, Pattern, RT, Visited0, Acc0),
+            {_Visited, Acc} = traverse_fs(TopDir, Pattern, Visited0, Acc0),
             lists:reverse(Acc);
         {error, unhandled_wildcard} ->
+            io:format("falling back to filelib:wildcard~n"),
             filelib:wildcard(Wildcard)
     end.
 
-traverse_fs(Path, Pattern, RT, Visited, Acc) ->
+traverse_fs(Path, Pattern, Visited, Acc) ->
     case file:list_dir(Path) of
         {ok, Bases} ->
             SubPaths = [filename:join(Path, Base) || Base <- Bases],
-            tr_fs_1(SubPaths, Pattern, RT, Visited, Acc);
+            tr_fs_1(SubPaths, Pattern, Visited, Acc);
         {error, _} ->
             {Visited, Acc}
     end.
 
-tr_fs_1([Path | Rest], Pattern, RT, Visited, Acc) ->
+tr_fs_1([Path | Rest], Pattern, Visited, Acc) ->
     BPath = safe_name_to_binary(Path), % to save memory, hopefully also time
     case is_in_set(BPath, Visited) of
         true ->
-            tr_fs_1(Rest, Pattern, RT, Visited, Acc);
+            tr_fs_1(Rest, Pattern, Visited, Acc);
         false ->
             Visited1 = add_element(BPath, Visited),
             case file:read_link_info(Path) of
                 {ok, #file_info{type=regular}} ->
                     case matches_file_pattern(Path, Pattern) of
                         true ->
-                            Path1 = RT(Path), % maybe drop prefix
-                            tr_fs_1(Rest, Pattern, RT, Visited1, [Path1 | Acc]);
+                            tr_fs_1(Rest, Pattern, Visited1, [Path | Acc]);
                         false ->
-                            tr_fs_1(Rest, Pattern, RT, Visited1, Acc)
+                            tr_fs_1(Rest, Pattern, Visited1, Acc)
                     end;
                 {ok, #file_info{type=directory}} ->
                     case is_recursive(Pattern) of
                         true ->
-                            {Visited2, Acc2} = traverse_fs(Path, Pattern, RT,
+                            {Visited2, Acc2} = traverse_fs(Path, Pattern,
                                                            Visited1, Acc),
-                            tr_fs_1(Rest, Pattern, RT, Visited2, Acc2);
+                            tr_fs_1(Rest, Pattern, Visited2, Acc2);
                         false ->
-                            tr_fs_1(Rest, Pattern, RT, Visited1, Acc)
+                            tr_fs_1(Rest, Pattern, Visited1, Acc)
                     end;
                 {ok, #file_info{type=symlink}} ->
                     case file:read_link(Path) of
@@ -167,17 +165,17 @@ tr_fs_1([Path | Rest], Pattern, RT, Visited, Acc) ->
                             CurrDir = filename:dirname(Path),
                             TargetPath = filename:join(CurrDir, SymlinkTarget),
                             CPath = canonicalize_path(TargetPath),
-                            tr_fs_1([CPath | Rest], Pattern, RT, Visited1, Acc);
+                            tr_fs_1([CPath | Rest], Pattern, Visited1, Acc);
                         {error, _} ->
-                            tr_fs_1(Rest, Pattern, RT, Visited1, Acc)
+                            tr_fs_1(Rest, Pattern, Visited1, Acc)
                     end;
                 {ok, _X} ->
-                    tr_fs_1(Rest, Pattern, RT, Visited, Acc);
+                    tr_fs_1(Rest, Pattern, Visited, Acc);
                 {error, _X} ->
-                    tr_fs_1(Rest, Pattern, RT, Visited, Acc)
+                    tr_fs_1(Rest, Pattern, Visited, Acc)
             end
     end;
-tr_fs_1([], _Pattern, _RT, Visited, Acc) ->
+tr_fs_1([], _Pattern, Visited, Acc) ->
     {Visited, Acc}.
 
 new_set() ->
@@ -197,54 +195,21 @@ is_in_set(Elem, Set) ->
 analyze_wildcard(Wildcard) ->
     try
         case lists:reverse(filename:split(Wildcard)) of
-            [BasePattern] ->
-                Cwd = safe_cwd(),
-                RT = mk_safe_path_unprefixer(Cwd),
-                {ok, {Cwd, analyze_base_pattern(BasePattern), RT}};
-            [BasePattern, "**"] ->
-                Cwd = safe_cwd(),
-                Pattern = {recursively, analyze_base_pattern(BasePattern)},
-                RT = mk_safe_path_unprefixer(Cwd),
-                {ok, {Cwd, Pattern, RT}};
             [BasePattern, "**" | TopDirReversed] ->
                 TopDir = filename:join(lists:reverse(TopDirReversed)),
                 error_if_wildcards(TopDir),
                 Pattern = {recursively, analyze_base_pattern(BasePattern)},
-                RT = fun(X) -> X end,
-                {ok, {TopDir, Pattern, RT}};
+                {ok, {TopDir, Pattern}};
             [BasePattern | TopDirReversed] ->
                 TopDir = filename:join(lists:reverse(TopDirReversed)),
                 error_if_wildcards(TopDir),
                 Pattern = analyze_base_pattern(BasePattern),
-                RT = fun(X) -> X end,
-                {ok, {TopDir, Pattern, RT}};
+                {ok, {TopDir, Pattern}};
             _ ->
                 throw({error, unhandled_wildcard})
         end
     catch throw:{error, Reason} ->
             {error, Reason}
-    end.
-
-safe_cwd() ->
-    case file:get_cwd() of
-        {ok, Cwd}  -> Cwd;
-        {error, _} -> "."
-    end.
-
-%% Remove the `Prefix' from a path, when it is a prefix,
-%% otherwise return Path unmodified.
-mk_safe_path_unprefixer(Prefix) ->
-    N = length(filename:split(Prefix)),
-    fun(Path) ->
-            case lists:prefix(Prefix, Path) of
-                true ->
-                    case lists:nthtail(N, filename:split(Path)) of
-                        []   -> "."; % Path =:= Prefix
-                        Tail -> filename:join(Tail)
-                    end;
-                false ->
-                    Path
-            end
     end.
 
 analyze_base_pattern("*."++ExtPattern) ->
