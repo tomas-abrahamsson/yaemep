@@ -263,7 +263,7 @@ safe_name_to_binary(Str) ->
     catch error:_ -> str_to_binary(Str, <<>>)
     end.
 
-str_to_binary([C | Rest], Acc) when C > 255 ->
+str_to_binary([C | Rest], Acc) ->
     str_to_binary(Rest, char_to_binary(C, Acc));
 str_to_binary("", Acc) ->
     Acc.
