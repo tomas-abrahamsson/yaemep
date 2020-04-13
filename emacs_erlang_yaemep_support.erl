@@ -112,7 +112,7 @@ erlang_project_dir(ErlangFilePath) ->
 %% to using the real implementation. Symlink loops are probably rare.
 -spec find_files(Pattern::string()) -> [FileName::string()].
 find_files(Wildcard) ->
-    case analyze_wildcard(Wildcard) of
+    case analyze_wildcard(canonicalize_path(Wildcard)) of
         {ok, {TopDir, Pattern}} ->
             Visited0 = new_set(), % containing paths for files, dirs, symlinks
             Acc0 = [],            % matching files
