@@ -31,7 +31,8 @@
          test_complete_module/1,
          test_complete_functions_in_module/1,
          test_complete_functions_in_module_from_erl_file/1,
-         test_compile_and_load/1
+         test_compile_and_load/1,
+         test_find_files_when_symlink_loops/1
         ]).
 
 all() ->
@@ -42,7 +43,8 @@ all() ->
      test_complete_module,
      test_complete_functions_in_module,
      test_complete_functions_in_module_from_erl_file,
-     test_compile_and_load
+     test_compile_and_load,
+     test_find_files_when_symlink_loops
     ].
 
 init_per_testcase(_Case, Config) ->
@@ -131,6 +133,21 @@ test_compile_and_load(_Config) ->
                 file:delete(filename:join(Dir, File))
         end,
     lists:foreach(Delete, ElcFiles),
+    ok.
+
+test_find_files_when_symlink_loops(_Config) ->
+    {ok, CurrentDir} = file:get_cwd(),
+    DirWithSymLoops = filename:join([CurrentDir, "..", "..","test",
+                                     "symlink-loopy"]),
+    Cmd = io_lib:format("escript '~s' find_files '~s'",
+                        [emacs_support_escript(),
+                         filename:join([DirWithSymLoops, "**", "*.dummy"])]),
+    Output = os:cmd(Cmd),
+    %% Expect (only) one match despite a symlink loopssss (even for a
+    %% non-symlink-aware implementation, directory traversal will
+    %% eventually terminate with an eloop error)
+    [_] = [Line || Line <- string:lexemes(Output, ["\r\n", $\n]),
+                   lists:suffix(".dummy", Line)],
     ok.
 
 emacs_support_escript() ->
