@@ -135,20 +135,108 @@ test_compile_and_load(_Config) ->
     lists:foreach(Delete, ElcFiles),
     ok.
 
-test_find_files_when_symlink_loops(_Config) ->
-    {ok, CurrentDir} = file:get_cwd(),
-    DirWithSymLoops = filename:join([CurrentDir, "..", "..","test",
-                                     "symlink-loopy"]),
-    Cmd = io_lib:format("escript '~s' find_files '~s'",
-                        [emacs_support_escript(),
-                         filename:join([DirWithSymLoops, "**", "*.dummy"])]),
-    Output = os:cmd(Cmd),
-    %% Expect (only) one match despite a symlink loopssss (even for a
+test_find_files_when_symlink_loops(Config) ->
+    Files = ["d/2 -> ..",
+             "d/x.dummy"],
+    DirWithSymLoops = setup_files(Files, Config),
+    %% Expect (only) one match despite a symlink loop (even for a
     %% non-symlink-aware implementation, directory traversal will
     %% eventually terminate with an eloop error)
-    [_] = [Line || Line <- string:lexemes(Output, ["\r\n", $\n]),
-                   lists:suffix(".dummy", Line)],
+    ["d/x.dummy"] =
+        run_emacs_support_escript_find_files(
+          DirWithSymLoops,
+          filename:join([DirWithSymLoops, "**", "*.dummy"])),
     ok.
+
+setup_files(Files, Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    DirTop = mk_new_dir(PrivDir, "dir-", 1),
+    setup_files_2(Files, DirTop),
+    debug_dir_structure(DirTop),
+    DirTop.
+
+mk_new_dir(Dir, SubDirBase, I) ->
+    Path = filename:join(Dir, SubDirBase ++ integer_to_list(I)),
+    case file_make_dir(Path) of
+        {error, eexist} ->
+            mk_new_dir(Dir, SubDirBase, I+1);
+        ok ->
+            Path
+    end.
+
+setup_files_2([Entry | Rest], DirTop) ->
+    case string:split(Entry, " -> ") of
+        [_] ->
+            Path = filename:join(DirTop, Entry),
+            filelib_ensure_dir(Path),
+            file_write_file(Path, <<>>),
+            setup_files_2(Rest, DirTop);
+        [SymlinkName, Target] ->
+            Path = filename:join(DirTop, SymlinkName),
+            filelib_ensure_dir(Path),
+            file_make_symlink(Target, Path),
+            setup_files_2(Rest, DirTop)
+    end;
+setup_files_2([], _DirTop) ->
+    ok.
+
+run_emacs_support_escript_find_files(TopDir, Pattern) ->
+    Cmd = io_lib:format("escript '~s' find_files '~s'",
+                        [emacs_support_escript(), Pattern]),
+    Output = os:cmd(Cmd),
+    Lines = [Line || Line <- string:lexemes(Output, ["\r\n", $\n])],
+    case Lines of
+        ["Result for "++_ | Results] ->
+            lists:sort([unprefix_topdir(TopDir, RestLine)
+                        || "  "++RestLine <- Results]);
+        _ ->
+            ct:log("Unexpected output from escript:~n~s~n---------~n",
+                   [Output]),
+            error({unexpected_output, Lines})
+    end.
+
+unprefix_topdir(TopDir, Path) ->
+    case lists:prefix(TopDir, Path) of
+        true  -> string:slice(Path, length(TopDir) + 1); % + 1 to skip the '/'
+        false -> Path
+    end.
+
+%% Some wrappers for functions in the `file' module, to make debugging
+%% easier in case of failures, so we see what path any failure is for.
+file_make_dir(Path) ->
+    case file:make_dir(Path) of
+        ok              -> ok;
+        {error, eexist} -> {error, eexist};
+        Other           -> file_fail({'file:make_dir',[Path]}, Other)
+    end.
+
+file_write_file(Path, Data) ->
+    case file:write_file(Path, Data) of
+        ok           -> ok;
+        {error, Why} -> file_fail({'file:make_dir',[Path]}, Why)
+    end.
+
+filelib_ensure_dir(Path) ->
+    case filelib:ensure_dir(Path) of
+        ok  -> ok;
+        Err -> file_fail({'filelib:ensure_dir',[Path]}, Err)
+    end.
+
+file_make_symlink(Target, Path) ->
+    case file:make_symlink(Target, Path) of
+        ok           -> ok;
+        {error, Why} -> file_fail({'file:make_symlink',[Target, Path]}, Why)
+    end.
+
+
+file_fail(Call, Error) ->
+    error({file_op_failed, #{call => Call,
+                             error => Error}}).
+
+debug_dir_structure(DirTop) ->
+    LsOutput = os:cmd("find '" ++ DirTop ++ "' -print0 | xargs -0 ls -ld"),
+    ct:log("dir structure in ~p:~n~s-------~n",
+           [DirTop, string:replace(LsOutput, DirTop, "...", all)]).
 
 emacs_support_escript() ->
     filename:join([emacs_dir(), "emacs_erlang_yaemep_support.erl"]).
