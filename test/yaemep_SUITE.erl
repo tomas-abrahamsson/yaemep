@@ -32,7 +32,7 @@
          test_complete_functions_in_module/1,
          test_complete_functions_in_module_from_erl_file/1,
          test_compile_and_load/1,
-         test_find_files_when_symlink_loops/1
+         test_find_files_when_symlinks/1
         ]).
 
 all() ->
@@ -44,7 +44,7 @@ all() ->
      test_complete_functions_in_module,
      test_complete_functions_in_module_from_erl_file,
      test_compile_and_load,
-     test_find_files_when_symlink_loops
+     test_find_files_when_symlinks
     ].
 
 init_per_testcase(_Case, Config) ->
@@ -135,17 +135,47 @@ test_compile_and_load(_Config) ->
     lists:foreach(Delete, ElcFiles),
     ok.
 
-test_find_files_when_symlink_loops(Config) ->
-    Files = ["d/2 -> ..",
-             "d/x.dummy"],
-    DirWithSymLoops = setup_files(Files, Config),
+test_find_files_when_symlinks(Config) ->
+    Files1 = ["d/2 -> ..",
+              "d/x.dummy"],
+    DirWithSymLoops1 = setup_files(Files1, Config),
     %% Expect (only) one match despite a symlink loop (even for a
     %% non-symlink-aware implementation, directory traversal will
     %% eventually terminate with an eloop error)
     ["d/x.dummy"] =
         run_emacs_support_escript_find_files(
-          DirWithSymLoops,
-          filename:join([DirWithSymLoops, "**", "*.dummy"])),
+          DirWithSymLoops1,
+          filename:join([DirWithSymLoops1, "**", "*.dummy"])),
+
+    %% Now check that non-loop symlinks within the directory structure
+    %% are found, and found only once.
+    Files2 = ["d/an-alias -> ./dd2",
+              "d/dd2/f1.dummy"],
+    DirWithSymLoops2 = setup_files(Files2, Config),
+    ["d/dd2/f1.dummy"] =  % should not be found as d/an-alias/f1.dummy
+        run_emacs_support_escript_find_files(
+          DirWithSymLoops2,
+          filename:join([DirWithSymLoops2, "**", "*.dummy"])),
+
+    %% Now check that symlinks outside the top dir are followed
+    Files3 = ["inside/l -> ../outside",
+              "inside/some_file.dummy",
+              "outside/other_file.dummy"],
+    DirWithSymLoops3 = setup_files(Files3, Config),
+    ["inside/some_file.dummy",
+     "outside/other_file.dummy"] =
+        run_emacs_support_escript_find_files(
+          DirWithSymLoops3,
+          filename:join([DirWithSymLoops3, "inside", "**", "*.dummy"])),
+
+    %% Canonicalization of ../ and ./ in symlinks
+    Files4 = ["inside/l -> ../inside/./../inside/../outside",
+              "outside/f.dummy"],
+    DirWithSymLoops4 = setup_files(Files4, Config),
+    ["outside/f.dummy"] =
+        run_emacs_support_escript_find_files(
+          DirWithSymLoops4,
+          filename:join([DirWithSymLoops4, "inside", "**", "*.dummy"])),
     ok.
 
 setup_files(Files, Config) ->
