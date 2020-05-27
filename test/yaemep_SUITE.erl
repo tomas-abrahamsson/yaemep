@@ -32,7 +32,8 @@
          test_complete_functions_in_module/1,
          test_complete_functions_in_module_from_erl_file/1,
          test_compile_and_load/1,
-         test_find_files_when_symlinks/1
+         test_find_files_when_symlinks/1,
+         test_find_files_patterns/1
         ]).
 
 all() ->
@@ -44,7 +45,8 @@ all() ->
      test_complete_functions_in_module,
      test_complete_functions_in_module_from_erl_file,
      test_compile_and_load,
-     test_find_files_when_symlinks
+     test_find_files_when_symlinks,
+     test_find_files_patterns
     ].
 
 init_per_testcase(_Case, Config) ->
@@ -176,6 +178,59 @@ test_find_files_when_symlinks(Config) ->
         run_emacs_support_escript_find_files(
           DirWithSymLoops4,
           filename:join([DirWithSymLoops4, "inside", "**", "*.dummy"])),
+    ok.
+
+test_find_files_patterns(Config) ->
+    Files = ["d/a/b/include/x.hrl",
+             "d/a/b/src/x.erl",
+             "d/a/b/ebin/x.beam",
+             "g/c/d/include/y.hrl",
+             "g/c/f/include/z.hrl",
+             "doc/a.html",
+             "README.md"],
+    DirTop = setup_files(Files, Config),
+
+    %% Alternative suffices in the patterns (any levels down)
+    ["d/a/b/include/x.hrl",
+     "d/a/b/src/x.erl",
+     "g/c/d/include/y.hrl",
+     "g/c/f/include/z.hrl"] =
+        run_emacs_support_escript_find_files(
+          DirTop,
+          filename:join([DirTop, "**", "*.{erl,hrl}"])),
+
+    %% Just a file suffix (any levels down)
+    ["d/a/b/ebin/x.beam"] =
+        run_emacs_support_escript_find_files(
+          DirTop,
+          filename:join([DirTop, "**", "*.beam"])),
+
+    %% Just a file suffix (just one level down)
+    ["doc/a.html"] =
+        run_emacs_support_escript_find_files(
+          DirTop,
+          filename:join([DirTop, "*", "*.html"])),
+
+    %% Base name is a not a pattern (any levels down)
+    ["d/a/b/ebin/x.beam"] =
+        run_emacs_support_escript_find_files(
+          DirTop,
+          filename:join([DirTop, "**", "x.beam"])),
+
+    %% No pattern (in top dir, no levels down)
+    ["README.md"] =
+        run_emacs_support_escript_find_files(
+          DirTop,
+          filename:join([DirTop, "README.md"])),
+
+    %% Handles also complicated patterns (falling back to filelib:wildcard)
+    ["d/a/b/include/x.hrl",
+     "d/a/b/src/x.erl",
+     %% "g/c/d/include/y.hrl", Not expecting to find this one
+     "g/c/f/include/z.hrl"] =
+        run_emacs_support_escript_find_files(
+          DirTop,
+          filename:join([DirTop, "{d,g}/*/{b,f}/*/*.{erl,hrl}"])),
     ok.
 
 setup_files(Files, Config) ->
